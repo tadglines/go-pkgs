@@ -8,7 +8,22 @@ import (
 	"testing"
 )
 
-var groups []string = []string{"1024", "1536", "2048", "3072", "4096", "6144", "8192"}
+var groups []string = []string{
+	"rfc5054.1024",
+	"rfc5054.1536",
+	"rfc5054.2048",
+	"rfc5054.3072",
+	"rfc5054.4096",
+	"rfc5054.6144",
+	"rfc5054.8192",
+	"stanford.1024",
+	"stanford.1536",
+	"stanford.2048",
+	"stanford.3072",
+	"stanford.4096",
+	"stanford.6144",
+	"stanford.8192",
+}
 
 var passwords []string = []string{
 	"0",

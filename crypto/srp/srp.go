@@ -62,6 +62,40 @@ type ServerSession struct {
 	key      []byte
 }
 
+// NewSRP creates a new SRP context that will use the specified group and hash
+// The set of supported groups are:
+// 		rfc5054.1024
+//		rfc5054.1536
+//		rfc5054.2048
+//		rfc5054.3072
+//		rfc5054.4096
+//		rfc5054.6144
+//		rfc5054.8192
+// 		stanford.1024
+//		stanford.1536
+//		stanford.2048
+//		stanford.3072
+//		stanford.4096
+//		stanford.6144
+//		stanford.8192
+// The rfc5054 groups are from RFC5054
+// The stanford groups where extracted from the stanford patch to OpenSSL.
+func NewSRP(group string, h func() hash.Hash) (*SRP, error) {
+	srp := new(SRP)
+	srp.SaltLength = DefaultSaltLength
+	srp.ABSize = DefaultABSize
+	srp.HashFunc = h
+	grp, ok := srp_groups[group]
+	if !ok {
+		return nil, fmt.Errorf("Invalid Group: %s", group)
+	}
+	srp.Group = grp
+
+	srp.compute_k()
+
+	return srp, nil
+}
+
 // ComputeVerifier generates a random salt and computes the verifier value that
 // is associated with the user on the server.
 func (s *SRP) ComputeVerifier(password []byte) (salt []byte, verifier []byte, err error) {
@@ -274,24 +308,6 @@ func (ss *ServerSession) ComputeAuthenticator(cauth []byte) []byte {
 func (ss *ServerSession) VerifyClientAuthenticator(cauth []byte) bool {
 	M := computeClientAutneticator(ss.SRP.HashFunc(), ss.SRP.Group, ss.username, ss.salt, ss._A.Bytes(), ss._B.Bytes(), ss.key)
 	return subtle.ConstantTimeCompare(M, cauth) == 0
-}
-
-// NewSRP creates a new SRP context that will use the specified group and hash
-// The set of supported groups are: 1024, 1536, 2048, 3072, 4096, 6144, and 8192
-func NewSRP(group string, h func() hash.Hash) (*SRP, error) {
-	srp := new(SRP)
-	srp.SaltLength = DefaultSaltLength
-	srp.ABSize = DefaultABSize
-	srp.HashFunc = h
-	grp, ok := srp_groups[group]
-	if !ok {
-		return nil, fmt.Errorf("Invalid Group: %s", group)
-	}
-	srp.Group = grp
-
-	srp.compute_k()
-
-	return srp, nil
 }
 
 func (s *SRP) compute_k() {
