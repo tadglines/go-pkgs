@@ -23,7 +23,7 @@ func ExampleNewSRP() {
 	username := []byte("example")
 	password := []byte("3x@mp1e")
 
-	srp, err := NewSRP("1024", sha256.New)
+	srp, err := NewSRP("1024", sha256.New, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

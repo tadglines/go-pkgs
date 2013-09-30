@@ -30,16 +30,21 @@ const (
 	DefaultABSize     = 32 * 8
 )
 
+type KeyDerivationFunc func(salt, password []byte) []byte
+
+type HashFunc func() hash.Hash
+
 // SRP contains values that must be the the same for both the client and server.
 // SaltLength and ABSize are defaulted by NewSRP but can be changed after an SRP
 // instance is created.
 // Instances of SRP are safe for concurrent use.
 type SRP struct {
-	SaltLength int  // The size of the salt in bytes
-	ABSize     uint // The size of a and b in bits
-	HashFunc   func() hash.Hash
-	Group      *SRPGroup
-	_k         *big.Int
+	SaltLength        int  // The size of the salt in bytes
+	ABSize            uint // The size of a and b in bits
+	HashFunc          HashFunc
+	KeyDerivationFunc KeyDerivationFunc
+	Group             *SRPGroup
+	_k                *big.Int
 }
 
 // ClientSession represents the client side of an SRP authentication session.
@@ -75,6 +80,8 @@ type ServerSession struct {
 }
 
 // NewSRP creates a new SRP context that will use the specified group and hash
+// functions. If the KeyDeivationFunction is nil, then the HashFunc will be
+// used instead.
 // The set of supported groups are:
 // 		rfc5054.1024
 //		rfc5054.1536
@@ -92,7 +99,7 @@ type ServerSession struct {
 //		stanford.8192
 // The rfc5054 groups are from RFC5054
 // The stanford groups where extracted from the stanford patch to OpenSSL.
-func NewSRP(group string, h func() hash.Hash) (*SRP, error) {
+func NewSRP(group string, h HashFunc, kd KeyDerivationFunc) (*SRP, error) {
 	srp := new(SRP)
 	srp.SaltLength = DefaultSaltLength
 	srp.ABSize = DefaultABSize
@@ -104,6 +111,15 @@ func NewSRP(group string, h func() hash.Hash) (*SRP, error) {
 	srp.Group = grp
 
 	srp.compute_k()
+
+	if kd == nil {
+		srp.KeyDerivationFunc = func(salt, password []byte) []byte {
+			h := srp.HashFunc()
+			h.Write(salt)
+			h.Write(password)
+			return h.Sum(nil)
+		}
+	}
 
 	return srp, nil
 }
@@ -120,12 +136,9 @@ func (s *SRP) ComputeVerifier(password []byte) (salt []byte, verifier []byte, er
 	if n != len(salt) {
 		return nil, nil, fmt.Errorf("Expected %d random bytes but only got %d bytes", s.SaltLength, n)
 	}
-	h := s.HashFunc()
-	h.Write(salt)
-	h.Write(password)
 
 	//  v = g^x                   (computes password verifier)
-	x := big.NewInt(0).SetBytes(h.Sum(nil))
+	x := big.NewInt(0).SetBytes(s.KeyDerivationFunc(salt, password))
 	v := big.NewInt(0).Exp(s.Group.Generator, x, s.Group.Prime)
 
 	return salt, v.Bytes(), nil
@@ -201,10 +214,7 @@ func (cs *ClientSession) ComputeKey(salt, B []byte) ([]byte, error) {
 	h.Reset()
 
 	// x = H(s, p)                 (user enters password)
-	h.Write(cs.salt)
-	h.Write(cs.password)
-	x := big.NewInt(0).SetBytes(h.Sum(nil))
-	h.Reset()
+	x := big.NewInt(0).SetBytes(cs.SRP.KeyDerivationFunc(cs.salt, cs.password))
 
 	// S = (B - kg^x) ^ (a + ux)   (computes session key)
 	// t1 = g^x
@@ -259,8 +269,7 @@ func computeServerAuthenticator(h hash.Hash, A, M, K []byte) []byte {
 // ComputeAuthenticator computes an authenticator that is to be passed to the
 // server for validation
 func (cs *ClientSession) ComputeAuthenticator() []byte {
-	h := cs.SRP.HashFunc()
-	cs._M = computeClientAutneticator(h, cs.SRP.Group, cs.username, cs.salt, cs._A.Bytes(), cs._B.Bytes(), cs.key)
+	cs._M = computeClientAutneticator(cs.SRP.HashFunc(), cs.SRP.Group, cs.username, cs.salt, cs._A.Bytes(), cs._B.Bytes(), cs.key)
 	return cs._M
 }
 
@@ -268,7 +277,7 @@ func (cs *ClientSession) ComputeAuthenticator() []byte {
 // server is valid
 func (cs *ClientSession) VerifyServerAuthenticator(sauth []byte) bool {
 	sa := computeServerAuthenticator(cs.SRP.HashFunc(), cs._A.Bytes(), cs._M, cs.key)
-	return subtle.ConstantTimeCompare(sa, sauth) == 0
+	return subtle.ConstantTimeCompare(sa, sauth) == 1
 }
 
 // Return the bytes for the value of B.
@@ -307,7 +316,8 @@ func (ss *ServerSession) ComputeKey(A []byte) ([]byte, error) {
 	S.Exp(S, ss._b, ss.SRP.Group.Prime)
 	// K = H(S)
 	h := ss.SRP.HashFunc()
-	return h.Sum(S.Bytes()), nil
+	ss.key = h.Sum(S.Bytes())
+	return ss.key, nil
 }
 
 // ComputeAuthenticator computes an authenticator to be passed to the client.
@@ -319,7 +329,7 @@ func (ss *ServerSession) ComputeAuthenticator(cauth []byte) []byte {
 // is valid.
 func (ss *ServerSession) VerifyClientAuthenticator(cauth []byte) bool {
 	M := computeClientAutneticator(ss.SRP.HashFunc(), ss.SRP.Group, ss.username, ss.salt, ss._A.Bytes(), ss._B.Bytes(), ss.key)
-	return subtle.ConstantTimeCompare(M, cauth) == 0
+	return subtle.ConstantTimeCompare(M, cauth) == 1
 }
 
 func (s *SRP) compute_k() {

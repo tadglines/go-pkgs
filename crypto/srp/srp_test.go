@@ -15,6 +15,7 @@
 package srp
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -56,7 +57,7 @@ var hashes []hashFunc = []hashFunc{
 }
 
 func testSRP(t *testing.T, group string, h func() hash.Hash, username, password []byte) {
-	srp, _ := NewSRP(group, h)
+	srp, _ := NewSRP(group, h, nil)
 	cs := srp.NewClientSession(username, password)
 	salt, v, err := srp.ComputeVerifier(password)
 	if err != nil {
@@ -64,14 +65,18 @@ func testSRP(t *testing.T, group string, h func() hash.Hash, username, password 
 	}
 	ss := srp.NewServerSession(username, salt, v)
 
-	_, err = cs.ComputeKey(salt, ss.GetB())
+	ckey, err := cs.ComputeKey(salt, ss.GetB())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = ss.ComputeKey(cs.GetA())
+	skey, err := ss.ComputeKey(cs.GetA())
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if !bytes.Equal(ckey, skey) {
+		t.Fatalf("Keys don't match:\n    Ckey: %v\n    Skey: %v\n", ckey, skey)
 	}
 
 	cauth := cs.ComputeAuthenticator()
@@ -80,7 +85,7 @@ func testSRP(t *testing.T, group string, h func() hash.Hash, username, password 
 	}
 
 	sauth := ss.ComputeAuthenticator(cauth)
-	if !ss.VerifyClientAuthenticator(sauth) {
+	if !cs.VerifyServerAuthenticator(sauth) {
 		t.Fatal("Server Authenticator is not valid")
 	}
 }
