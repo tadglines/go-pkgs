@@ -24,6 +24,13 @@ import (
 )
 
 var groups []string = []string{
+	"openssl.1024",
+	"openssl.1536",
+	"openssl.2048",
+	"openssl.3072",
+	"openssl.4096",
+	"openssl.6144",
+	"openssl.8192",
 	"rfc5054.1024",
 	"rfc5054.1536",
 	"rfc5054.2048",
@@ -31,13 +38,6 @@ var groups []string = []string{
 	"rfc5054.4096",
 	"rfc5054.6144",
 	"rfc5054.8192",
-	"stanford.1024",
-	"stanford.1536",
-	"stanford.2048",
-	"stanford.3072",
-	"stanford.4096",
-	"stanford.6144",
-	"stanford.8192",
 }
 
 var passwords []string = []string{
@@ -57,7 +57,10 @@ var hashes []hashFunc = []hashFunc{
 }
 
 func testSRP(t *testing.T, group string, h func() hash.Hash, username, password []byte) {
-	srp, _ := NewSRP(group, h, nil)
+	srp, err := NewSRP(group, h, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cs := srp.NewClientSession(username, password)
 	salt, v, err := srp.ComputeVerifier(password)
 	if err != nil {
@@ -76,7 +79,17 @@ func testSRP(t *testing.T, group string, h func() hash.Hash, username, password 
 	}
 
 	if !bytes.Equal(ckey, skey) {
-		t.Fatalf("Keys don't match:\n    Ckey: %v\n    Skey: %v\n", ckey, skey)
+		if cs._A.Cmp(ss._A) != 0 {
+			t.Logf("A isn't the same for client and server")
+		}
+		if cs._B.Cmp(ss._B) != 0 {
+			t.Logf("B isn't the same for client and server")
+		}
+		if cs._u.Cmp(ss._u) != 0 {
+			t.Logf("u isn't the same for client and server")
+		}
+		t.Fatalf("Keys don't match(%s:%d):\n    Ckey: %v\n    Skey: %v\n",
+			group, h().Size(), ckey, skey)
 	}
 
 	cauth := cs.ComputeAuthenticator()

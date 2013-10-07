@@ -27,7 +27,7 @@ import (
 
 const (
 	DefaultSaltLength = 20
-	DefaultABSize     = 32 * 8
+	DefaultABSize     = 256
 )
 
 type KeyDerivationFunc func(salt, password []byte) []byte
@@ -138,8 +138,8 @@ func (s *SRP) ComputeVerifier(password []byte) (salt []byte, verifier []byte, er
 	}
 
 	//  v = g^x                   (computes password verifier)
-	x := big.NewInt(0).SetBytes(s.KeyDerivationFunc(salt, password))
-	v := big.NewInt(0).Exp(s.Group.Generator, x, s.Group.Prime)
+	x := new(big.Int).SetBytes(s.KeyDerivationFunc(salt, password))
+	v := new(big.Int).Exp(s.Group.Generator, x, s.Group.Prime)
 
 	return salt, v.Bytes(), nil
 }
@@ -153,7 +153,7 @@ func (s *SRP) NewClientSession(username, password []byte) *ClientSession {
 	cs._a = s.gen_rand_ab()
 
 	// g^a
-	cs._A = big.NewInt(0).Exp(cs.SRP.Group.Generator, cs._a, cs.SRP.Group.Prime)
+	cs._A = new(big.Int).Exp(cs.SRP.Group.Generator, cs._a, cs.SRP.Group.Prime)
 	return cs
 }
 
@@ -165,11 +165,11 @@ func (s *SRP) NewServerSession(username, salt, verifier []byte) *ServerSession {
 	ss.salt = salt
 	ss.verifier = verifier
 	ss._b = s.gen_rand_ab()
-	ss._v = big.NewInt(0).SetBytes(verifier)
+	ss._v = new(big.Int).SetBytes(verifier)
 
 	// kv + g^b
-	ss._B = big.NewInt(0).Mul(ss.SRP._k, ss._v)
-	ss._B.Add(ss._B, big.NewInt(0).Exp(ss.SRP.Group.Generator, ss._b, ss.SRP.Group.Prime))
+	ss._B = new(big.Int).Mul(ss.SRP._k, ss._v)
+	ss._B.Add(ss._B, new(big.Int).Exp(ss.SRP.Group.Generator, ss._b, ss.SRP.Group.Prime))
 	return ss
 }
 
@@ -180,18 +180,12 @@ func (cs *ClientSession) GetA() []byte {
 
 // SetB sets the value of B that was returned by the server
 func (cs *ClientSession) setB(B []byte) error {
-	cs._B = big.NewInt(0).SetBytes(B)
-	zero := big.NewInt(0)
-	BN := big.NewInt(0).Mod(cs._B, cs.SRP.Group.Prime)
-	if BN.Cmp(zero) == 0 {
+	cs._B = new(big.Int).SetBytes(B)
+	if !cs.SRP.is_AB_valid(cs._B) {
 		return fmt.Errorf("B%%N == 0")
 	}
-	h := cs.SRP.HashFunc()
-	// u = H(A, B)
-	h.Write(cs._A.Bytes())
-	h.Write(cs._B.Bytes())
-	cs._u = big.NewInt(0).SetBytes(h.Sum(nil))
-	if cs._u.Cmp(zero) == 0 {
+	cs._u = cs.SRP.compute_u(cs._A, cs._B)
+	if cs._u.BitLen() == 0 {
 		return fmt.Errorf("H(A, B) == 0")
 	}
 	return nil
@@ -207,27 +201,21 @@ func (cs *ClientSession) ComputeKey(salt, B []byte) ([]byte, error) {
 	}
 
 	h := cs.SRP.HashFunc()
-	// u = H(A, B)
-	h.Write(cs._A.Bytes())
-	h.Write(cs._B.Bytes())
-	cs._u = big.NewInt(0).SetBytes(h.Sum(nil))
-	h.Reset()
 
 	// x = H(s, p)                 (user enters password)
-	x := big.NewInt(0).SetBytes(cs.SRP.KeyDerivationFunc(cs.salt, cs.password))
+	x := new(big.Int).SetBytes(cs.SRP.KeyDerivationFunc(cs.salt, cs.password))
 
 	// S = (B - kg^x) ^ (a + ux)   (computes session key)
 	// t1 = g^x
-	t1 := big.NewInt(0).Exp(cs.SRP.Group.Generator, x, cs.SRP.Group.Prime)
+	t1 := new(big.Int).Exp(cs.SRP.Group.Generator, x, cs.SRP.Group.Prime)
 	// t1 = kg^x
-	t1.Mul(cs.SRP._k, t1).Mod(t1, cs.SRP.Group.Prime)
+	t1.Mul(cs.SRP._k, t1)
 	// t1 = B - kg^x
-	t1.Sub(cs._B, t1).Mod(t1, cs.SRP.Group.Prime)
+	t1.Sub(cs._B, t1)
 	// t2 = ux
-	t2 := big.NewInt(0).Mul(cs._u, x)
-	t2.Mod(t2, cs.SRP.Group.Prime)
+	t2 := new(big.Int).Mul(cs._u, x)
 	// t2 = a + ux
-	t2.Add(cs._a, t2).Mod(t2, cs.SRP.Group.Prime)
+	t2.Add(cs._a, t2)
 	// t1 = (B - kg^x) ^ (a + ux)
 	t1.Exp(t1, t2, cs.SRP.Group.Prime)
 	// K = H(S)
@@ -243,9 +231,9 @@ func (cs *ClientSession) GetKey() []byte {
 
 func computeClientAutneticator(h hash.Hash, grp *SRPGroup, username, salt, A, B, K []byte) []byte {
 	//M = H(H(N) xor H(g), H(I), s, A, B, K)
-	hn := big.NewInt(0).SetBytes(h.Sum(grp.Prime.Bytes()))
+	hn := new(big.Int).SetBytes(h.Sum(grp.Prime.Bytes()))
 	h.Reset()
-	hg := big.NewInt(0).SetBytes(h.Sum(grp.Generator.Bytes()))
+	hg := new(big.Int).SetBytes(h.Sum(grp.Generator.Bytes()))
 	h.Reset()
 	hi := h.Sum(username)
 	h.Reset()
@@ -286,18 +274,12 @@ func (ss *ServerSession) GetB() []byte {
 }
 
 func (ss *ServerSession) setA(A []byte) error {
-	ss._A = big.NewInt(0).SetBytes(A)
-	zero := big.NewInt(0)
-	AN := big.NewInt(0).Mod(ss._A, ss.SRP.Group.Prime)
-	if AN.Cmp(zero) == 0 {
+	ss._A = new(big.Int).SetBytes(A)
+	if !ss.SRP.is_AB_valid(ss._A) {
 		return fmt.Errorf("A%%N == 0")
 	}
-	h := ss.SRP.HashFunc()
-	// u = H(A, B)
-	h.Write(ss._A.Bytes())
-	h.Write(ss._B.Bytes())
-	ss._u = big.NewInt(0).SetBytes(h.Sum(nil))
-	if ss._u.Cmp(zero) == 0 {
+	ss._u = ss.SRP.compute_u(ss._A, ss._B)
+	if ss._u.BitLen() == 0 {
 		return fmt.Errorf("H(A, B) == 0")
 	}
 	return nil
@@ -311,8 +293,8 @@ func (ss *ServerSession) ComputeKey(A []byte) ([]byte, error) {
 	}
 
 	// S = (Av^u) ^ b              (computes session key)
-	S := big.NewInt(0).Exp(ss._v, ss._u, ss.SRP.Group.Prime)
-	S.Mul(ss._A, S).Mod(S, ss.SRP.Group.Prime)
+	S := new(big.Int).Exp(ss._v, ss._u, ss.SRP.Group.Prime)
+	S.Mul(ss._A, S)
 	S.Exp(S, ss._b, ss.SRP.Group.Prime)
 	// K = H(S)
 	h := ss.SRP.HashFunc()
@@ -332,18 +314,43 @@ func (ss *ServerSession) VerifyClientAuthenticator(cauth []byte) bool {
 	return subtle.ConstantTimeCompare(M, cauth) == 1
 }
 
+func (s *SRP) pad(n *big.Int) []byte {
+	nbytes := n.Bytes()
+	if len(nbytes) < s.Group.Size/8 {
+		bytes := make([]byte, s.Group.Size/8)
+		copy(bytes[len(bytes)-len(nbytes):], nbytes)
+		return bytes
+	} else {
+		return nbytes
+	}
+}
+
+func (s *SRP) compute_u(A, B *big.Int) *big.Int {
+	// u = H(A, B) where A and B are padded to the same size as N
+	h := s.HashFunc()
+	h.Write(s.pad(A))
+	h.Write(s.pad(B))
+	return new(big.Int).SetBytes(h.Sum(nil))
+}
+
 func (s *SRP) compute_k() {
+	// H(N | PAD(g))
 	h := s.HashFunc()
 	h.Write(s.Group.Prime.Bytes())
-	h.Write(s.Group.Generator.Bytes())
-	s._k = big.NewInt(0).SetBytes(h.Sum(nil))
+	h.Write(s.pad(s.Group.Generator))
+	s._k = new(big.Int).SetBytes(h.Sum(nil))
 }
 
 func (s *SRP) gen_rand_ab() *big.Int {
-	max := big.NewInt(0).Lsh(big.NewInt(1), s.ABSize)
+	max := new(big.Int).Lsh(big.NewInt(1), s.ABSize)
 	r, err := rand.Int(rand.Reader, max)
 	if err != nil {
 		panic(err)
 	}
 	return r
+}
+
+func (s *SRP) is_AB_valid(AB *big.Int) bool {
+	ABmodN := new(big.Int).Mod(AB, s.Group.Prime)
+	return ABmodN.BitLen() != 0
 }
