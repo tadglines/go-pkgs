@@ -113,13 +113,14 @@ func NewSRP(group string, h HashFunc, kd KeyDerivationFunc) (*SRP, error) {
 	srp.compute_k()
 
 	if kd == nil {
-		srp.KeyDerivationFunc = func(salt, password []byte) []byte {
+		kd = func(salt, password []byte) []byte {
 			h := srp.HashFunc()
 			h.Write(salt)
 			h.Write(password)
 			return h.Sum(nil)
 		}
 	}
+	srp.KeyDerivationFunc = kd
 
 	return srp, nil
 }
