@@ -125,6 +125,14 @@ func NewSRP(group string, h HashFunc, kd KeyDerivationFunc) (*SRP, error) {
 	return srp, nil
 }
 
+// utility function that hashes the provided data with the provided hashfunction,
+// returning the digest.
+func quickHash(hf HashFunc, data []byte) []byte {
+	h := hf()
+	h.Write(data)
+	return h.Sum(nil)
+}
+
 // ComputeVerifier generates a random salt and computes the verifier value that
 // is associated with the user on the server.
 func (s *SRP) ComputeVerifier(password []byte) (salt []byte, verifier []byte, err error) {
@@ -169,8 +177,9 @@ func (s *SRP) NewServerSession(username, salt, verifier []byte) *ServerSession {
 	ss._v = new(big.Int).SetBytes(verifier)
 
 	// kv + g^b
-	ss._B = new(big.Int).Mul(ss.SRP._k, ss._v)
-	ss._B.Add(ss._B, new(big.Int).Exp(ss.SRP.Group.Generator, ss._b, ss.SRP.Group.Prime))
+	kv := new(big.Int).Mul(ss.SRP._k, ss._v)
+	kvgb := new(big.Int).Add(kv, new(big.Int).Exp(ss.SRP.Group.Generator, ss._b, ss.SRP.Group.Prime))
+	ss._B = new(big.Int).Mod(kvgb, ss.SRP.Group.Prime)
 	return ss
 }
 
@@ -201,26 +210,27 @@ func (cs *ClientSession) ComputeKey(salt, B []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	h := cs.SRP.HashFunc()
-
 	// x = H(s, p)                 (user enters password)
 	x := new(big.Int).SetBytes(cs.SRP.KeyDerivationFunc(cs.salt, cs.password))
 
 	// S = (B - kg^x) ^ (a + ux)   (computes session key)
 	// t1 = g^x
 	t1 := new(big.Int).Exp(cs.SRP.Group.Generator, x, cs.SRP.Group.Prime)
-	// t1 = kg^x
+	// unblind verifier
+	t1.Sub(cs.SRP.Group.Prime, t1)
 	t1.Mul(cs.SRP._k, t1)
-	// t1 = B - kg^x
-	t1.Sub(cs._B, t1)
+	t1.Add(t1, cs._B)
+	t1.Mod(t1, cs.SRP.Group.Prime)
+
 	// t2 = ux
 	t2 := new(big.Int).Mul(cs._u, x)
 	// t2 = a + ux
 	t2.Add(cs._a, t2)
+
 	// t1 = (B - kg^x) ^ (a + ux)
-	t1.Exp(t1, t2, cs.SRP.Group.Prime)
+	t3 := new(big.Int).Exp(t1, t2, cs.SRP.Group.Prime)
 	// K = H(S)
-	cs.key = h.Sum(t1.Bytes())
+	cs.key = quickHash(cs.SRP.HashFunc, t3.Bytes())
 
 	return cs.key, nil
 }
@@ -230,16 +240,18 @@ func (cs *ClientSession) GetKey() []byte {
 	return cs.key
 }
 
-func computeClientAutneticator(h hash.Hash, grp *SRPGroup, username, salt, A, B, K []byte) []byte {
+func computeClientAuthenticator(hf HashFunc, grp *SRPGroup, username, salt, A, B, K []byte) []byte {
 	//M = H(H(N) xor H(g), H(I), s, A, B, K)
-	hn := new(big.Int).SetBytes(h.Sum(grp.Prime.Bytes()))
-	h.Reset()
-	hg := new(big.Int).SetBytes(h.Sum(grp.Generator.Bytes()))
-	h.Reset()
-	hi := h.Sum(username)
-	h.Reset()
-	hn.Xor(hn, hg)
-	h.Write(hn.Bytes())
+	
+	// H(N) xor H(g)
+	hn := new(big.Int).SetBytes(quickHash(hf, grp.Prime.Bytes()))
+	hg := new(big.Int).SetBytes(quickHash(hf, grp.Generator.Bytes()))
+	hng := hn.Xor(hn, hg)
+
+	hi := quickHash(hf, []byte(username))
+	
+	h := hf()
+	h.Write(hng.Bytes())
 	h.Write(hi)
 	h.Write(salt)
 	h.Write(A)
@@ -248,7 +260,8 @@ func computeClientAutneticator(h hash.Hash, grp *SRPGroup, username, salt, A, B,
 	return h.Sum(nil)
 }
 
-func computeServerAuthenticator(h hash.Hash, A, M, K []byte) []byte {
+func computeServerAuthenticator(hf HashFunc, A, M, K []byte) []byte {
+	h := hf()
 	h.Write(A)
 	h.Write(M)
 	h.Write(K)
@@ -258,14 +271,14 @@ func computeServerAuthenticator(h hash.Hash, A, M, K []byte) []byte {
 // ComputeAuthenticator computes an authenticator that is to be passed to the
 // server for validation
 func (cs *ClientSession) ComputeAuthenticator() []byte {
-	cs._M = computeClientAutneticator(cs.SRP.HashFunc(), cs.SRP.Group, cs.username, cs.salt, cs._A.Bytes(), cs._B.Bytes(), cs.key)
+	cs._M = computeClientAuthenticator(cs.SRP.HashFunc, cs.SRP.Group, cs.username, cs.salt, cs._A.Bytes(), cs._B.Bytes(), cs.key)
 	return cs._M
 }
 
 // VerifyServerAuthenticator returns true if the authenticator returned by the
 // server is valid
 func (cs *ClientSession) VerifyServerAuthenticator(sauth []byte) bool {
-	sa := computeServerAuthenticator(cs.SRP.HashFunc(), cs._A.Bytes(), cs._M, cs.key)
+	sa := computeServerAuthenticator(cs.SRP.HashFunc, cs._A.Bytes(), cs._M, cs.key)
 	return subtle.ConstantTimeCompare(sa, sauth) == 1
 }
 
@@ -298,20 +311,19 @@ func (ss *ServerSession) ComputeKey(A []byte) ([]byte, error) {
 	S.Mul(ss._A, S)
 	S.Exp(S, ss._b, ss.SRP.Group.Prime)
 	// K = H(S)
-	h := ss.SRP.HashFunc()
-	ss.key = h.Sum(S.Bytes())
+	ss.key = quickHash(ss.SRP.HashFunc, S.Bytes())
 	return ss.key, nil
 }
 
 // ComputeAuthenticator computes an authenticator to be passed to the client.
 func (ss *ServerSession) ComputeAuthenticator(cauth []byte) []byte {
-	return computeServerAuthenticator(ss.SRP.HashFunc(), ss._A.Bytes(), cauth, ss.key)
+	return computeServerAuthenticator(ss.SRP.HashFunc, ss._A.Bytes(), cauth, ss.key)
 }
 
 // VerifyClientAuthenticator returns true if the client authenticator
 // is valid.
 func (ss *ServerSession) VerifyClientAuthenticator(cauth []byte) bool {
-	M := computeClientAutneticator(ss.SRP.HashFunc(), ss.SRP.Group, ss.username, ss.salt, ss._A.Bytes(), ss._B.Bytes(), ss.key)
+	M := computeClientAuthenticator(ss.SRP.HashFunc, ss.SRP.Group, ss.username, ss.salt, ss._A.Bytes(), ss._B.Bytes(), ss.key)
 	return subtle.ConstantTimeCompare(M, cauth) == 1
 }
 
