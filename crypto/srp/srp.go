@@ -176,7 +176,7 @@ func (s *SRP) NewServerSession(username, salt, verifier []byte) *ServerSession {
 	ss._b = s.gen_rand_ab()
 	ss._v = new(big.Int).SetBytes(verifier)
 
-	// kv + g^b
+	// B = (kv + g^b) mod n (blinding)
 	kv := new(big.Int).Mul(ss.SRP._k, ss._v)
 	kvgb := new(big.Int).Add(kv, new(big.Int).Exp(ss.SRP.Group.Generator, ss._b, ss.SRP.Group.Prime))
 	ss._B = new(big.Int).Mod(kvgb, ss.SRP.Group.Prime)
@@ -191,6 +191,14 @@ func (cs *ClientSession) GetA() []byte {
 // SetB sets the value of B that was returned by the server
 func (cs *ClientSession) setB(B []byte) error {
 	cs._B = new(big.Int).SetBytes(B)
+	// B == 0
+	if cs._B.BitLen() == 0 {
+		return fmt.Errorf("B == 0")
+	}
+	// B >= modulus
+	if cs._B.Cmp(cs.SRP.Group.Prime) >= 0 {
+		return fmt.Errorf("B >= modulus")
+	}
 	if !cs.SRP.is_AB_valid(cs._B) {
 		return fmt.Errorf("B%%N == 0")
 	}
@@ -242,14 +250,14 @@ func (cs *ClientSession) GetKey() []byte {
 
 func computeClientAuthenticator(hf HashFunc, grp *SRPGroup, username, salt, A, B, K []byte) []byte {
 	//M = H(H(N) xor H(g), H(I), s, A, B, K)
-	
+
 	// H(N) xor H(g)
 	hn := new(big.Int).SetBytes(quickHash(hf, grp.Prime.Bytes()))
 	hg := new(big.Int).SetBytes(quickHash(hf, grp.Generator.Bytes()))
 	hng := hn.Xor(hn, hg)
 
 	hi := quickHash(hf, []byte(username))
-	
+
 	h := hf()
 	h.Write(hng.Bytes())
 	h.Write(hi)
@@ -306,9 +314,23 @@ func (ss *ServerSession) ComputeKey(A []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// S = (Av^u) ^ b              (computes session key)
+	// S = (Av^u) mod N
 	S := new(big.Int).Exp(ss._v, ss._u, ss.SRP.Group.Prime)
-	S.Mul(ss._A, S)
+	S.Mul(ss._A, S).Mod(S, ss.SRP.Group.Prime)
+
+	// Reject A*v^u == 0,1 (mod N)
+	one := big.NewInt(1)
+	if S.Cmp(one) <= 0 {
+		return nil, fmt.Errorf("Av^u) mod N <= 0")
+	}
+
+	// Reject A*v^u == -1 (mod N)
+	t1 := new(big.Int).Add(S, one)
+	if t1.BitLen() == 0 {
+		return nil, fmt.Errorf("Av^u) mod N == -1")
+	}
+
+	// S = (S ^ b) mod N              (computes session key)
 	S.Exp(S, ss._b, ss.SRP.Group.Prime)
 	// K = H(S)
 	ss.key = quickHash(ss.SRP.HashFunc, S.Bytes())
