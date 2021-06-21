@@ -15,6 +15,7 @@
 package srp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"log"
 )
@@ -23,7 +24,7 @@ func ExampleNewSRP() {
 	username := []byte("example")
 	password := []byte("3x@mp1e")
 
-	srp, err := NewSRP("1024", sha256.New, nil)
+	srp, err := NewSRP("rfc5054.3072", sha256.New, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -53,7 +54,13 @@ func ExampleNewSRP() {
 		log.Fatal("Client Authenticator is not valid")
 	}
 	sauth := ss.ComputeAuthenticator(cauth)
-	if !ss.VerifyClientAuthenticator(sauth) {
+	if !cs.VerifyServerAuthenticator(sauth) {
 		log.Fatal("Server Authenticator is not valid")
+	}
+
+	if bytes.Equal(ckey, skey) {
+		log.Printf("Client's and Server's computed session key matches\n")
+	} else {
+		log.Fatal("Client's and Server's computed session key DOES NOT MATCH")
 	}
 }
